@@ -92,9 +92,11 @@ async def http_demo() -> None:
             # Use the base Windows interpreter to avoid an extra venv launcher process.
             "PYTHONPATH": os.pathsep.join(sys.path),
         }
-        executable = (
-            str(Path(sys.base_prefix) / "python.exe") if os.name == "nt" else sys.executable
-        )
+        executable = sys.executable
+        creationflags = 0
+        if sys.platform == "win32":
+            executable = str(Path(sys.base_prefix) / "python.exe")
+            creationflags = subprocess.CREATE_NO_WINDOW
         processes: list[asyncio.subprocess.Process] = []
         with (Path(directory) / "servers.log").open("wb") as logs:
             try:
@@ -118,7 +120,7 @@ async def http_demo() -> None:
                             env=env,
                             stdout=logs,
                             stderr=logs,
-                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                            creationflags=creationflags,
                         )
                     )
                 async with httpx.AsyncClient(timeout=10, trust_env=False) as client:

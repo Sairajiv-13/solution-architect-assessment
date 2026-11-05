@@ -14,7 +14,7 @@ Executed November 5, 2026 on Windows x64 with CPython 3.12.14 and `uv` 0.13.7. T
 | `python -u -m assessment.demo` | Exited 0. Exercised the stdio handshake and both tools, JSON-RPC `-32602` and `-32001` errors, transparent tool listing, primary success, 429 fallback, 3-second timeout fallback, sanitized backup failure, and all three redactions. |
 | `git diff --check` | Passed on the review changes. |
 
-The offline suite uses real stdio subprocesses and an on-disk SQLite database, including independent processes contending for the same quota. HTTP failures use deterministic in-process transports. The demo exercises actual HTTP connections on loopback. Hosted GitHub Actions verification remains pending.
+The offline suite uses real stdio subprocesses and an on-disk SQLite database, including independent processes contending for the same quota. HTTP failures use deterministic in-process transports. The demo exercises actual HTTP connections on loopback. [Hosted Linux and Windows runs](https://github.com/Sairajiv-13/solution-architect-assessment/actions)
 
 ## Submission preflight
 
@@ -28,7 +28,7 @@ Extracted the candidate ZIP into a separate directory and created a fresh Window
 | `mypy` | No issues in 17 source and test files. |
 | `python -u -m assessment.demo` | Passed all four tasks over real stdio and loopback HTTP. Median time to first safe streamed text was 19.005 ms across seven local requests. |
 
-The hosted workflow pins checkout and uv setup to Node 24 releases and runs the same project checks on Linux and Windows. Hosted execution starts when the commit is pushed. [GitHub Actions runner runtime](https://github.blog/changelog/2026-09-23-node-20-is-no-longer-available-in-github-actions/)
+The hosted workflow pins checkout and uv setup to Node 24 releases and runs the same project checks on Linux and Windows. The first hosted run exposed a Linux mypy error in the demo's Windows subprocess flag. The demo now guards that flag with `sys.platform`, which mypy uses to narrow platform-specific attributes. [First hosted run](https://github.com/Sairajiv-13/solution-architect-assessment/actions/runs/42119451970) · [GitHub Actions runner runtime](https://github.blog/changelog/2026-09-23-node-20-is-no-longer-available-in-github-actions/)
 
 ## Review regressions
 
