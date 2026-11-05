@@ -118,6 +118,9 @@ async def test_sse_every_split_utf8_crlf_multiline() -> None:
         b"data: \xff\n\n",
         b"data: " + b"a" * 20000,
         b"data: [DONE]",
+        b"data: {}\n\ndata: [DONE]\n\n",
+        b'data: {"usage":null}\n\ndata: [DONE]\n\n',
+        b'data: {"delta":"a","delta":"b"}\n\ndata: [DONE]\n\n',
     ],
 )
 async def test_malformed_provider_stream(wire: bytes) -> None:

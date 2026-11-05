@@ -3,6 +3,7 @@ import multiprocessing
 import sqlite3
 import threading
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,51 @@ class Clock:
 
     def __call__(self) -> float:
         return self.now
+
+
+@pytest.mark.parametrize("recover", [False, True])
+def test_settlement_samples_clock_after_writer_lock(tmp_path: Path, recover: bool) -> None:
+    clock = Clock()
+    waiting = threading.Event()
+    main_thread = threading.current_thread()
+
+    class ObservedQuota(Quota):
+        def _connect(self) -> sqlite3.Connection:
+            db = super()._connect()
+            if threading.current_thread() is not main_thread:
+
+                def observe(statement: str) -> None:
+                    if statement.startswith(("BEGIN IMMEDIATE", "UPDATE reservations")):
+                        waiting.set()
+
+                db.set_trace_callback(observe)
+            return db
+
+    quota = ObservedQuota(tmp_path / "quota.db", limit=100, window=2, clock=clock)
+    quota.initialize()
+    ticket = quota.reserve_sync("tenant", 70)
+
+    def settle() -> None:
+        if recover:
+            quota.recover_offline()
+        else:
+            quota.finish_sync(ticket, 70)
+
+    with closing(sqlite3.connect(quota.path, isolation_level=None)) as blocker:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            blocker.execute("BEGIN IMMEDIATE")
+            try:
+                pending = pool.submit(settle)
+                assert waiting.wait(3)
+                clock.now += 3
+            finally:
+                blocker.commit()
+            pending.result(5)
+    assert rows(quota.path) == [(70, clock.now)]
+    with pytest.raises(QuotaExceeded):
+        quota.reserve_sync("tenant", 100)
+    clock.now += 2
+    quota.reserve_sync("tenant", 100)
 
 
 def admitted(path: str) -> bool:

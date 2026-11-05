@@ -177,6 +177,11 @@ def test_wire_failures_and_no_notification_side_effects(session: Session) -> Non
         ('{"jsonrpc":"2.0","id":99,"method":"unknown"}', -32601),
         ('{"jsonrpc":"2.0","id":99,"method":"tools/call","params":[]}', -32602),
         ('{"jsonrpc":"2.0","id":99,"method":"tools/list","params":null}', -32602),
+        (
+            '{"jsonrpc":"2.0","id":99,"method":"tools/list",'
+            '"params":{"_meta":{"progressToken":true}}}',
+            -32602,
+        ),
         ('{"jsonrpc":"2.0","id":99,"method":"ping","params":null}', -32602),
         (r'{"jsonrpc":"2.0","id":99,"method":"tools/list","params":{"cursor":"\ud800"}}', -32700),
         (

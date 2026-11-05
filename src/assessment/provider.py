@@ -1,12 +1,14 @@
 import codecs
 import json
 from collections.abc import AsyncIterator
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any
 
 import anyio
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, model_validator
+
+from assessment.protocol import decode_json
 
 
 class ProviderFailure(Exception):
@@ -30,6 +32,14 @@ class Delta(BaseModel):
     delta: StrictStr = ""
     usage: Usage | None = None
 
+    @model_validator(mode="after")
+    def check_event(self) -> "Delta":
+        if "usage" in self.model_fields_set and self.usage is None:
+            raise ValueError("Usage must be an object when present")
+        if "delta" not in self.model_fields_set and self.usage is None:
+            raise ValueError("An event must contain text or usage")
+        return self
+
 
 class Completion(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -37,7 +47,27 @@ class Completion(BaseModel):
     usage: Usage | None = None
 
 
+@asynccontextmanager
+async def open_upstream(
+    client: httpx.AsyncClient, request: httpx.Request
+) -> AsyncIterator[httpx.Response]:
+    request.headers["Accept-Encoding"] = "identity"
+    response = await client.send(request, stream=True)
+    try:
+        yield response
+    finally:
+        with anyio.CancelScope(shield=True):
+            await response.aclose()
+
+
+def require_identity_encoding(response: httpx.Response) -> None:
+    # Reject compressed replies before decoding can inflate a chunk beyond the body cap.
+    if response.headers.get("content-encoding", "identity").strip().lower() != "identity":
+        raise ProviderFailure()
+
+
 async def limited_body(response: httpx.Response, limit: int = 262_144) -> bytes:
+    require_identity_encoding(response)
     body = bytearray()
     async for chunk in response.aiter_bytes(chunk_size=1024):
         if len(body) + len(chunk) > limit:
@@ -72,10 +102,10 @@ async def sse_deltas(chunks: AsyncIterator[bytes], max_event: int = 16_384) -> A
                     continue
                 if payload == "[DONE]":
                     return
-                yield Delta.model_validate_json(payload)
+                yield Delta.model_validate(decode_json(payload))
         decoder.decode(b"", final=True)
         raise ProviderFailure()
-    except (UnicodeError, ValidationError, ValueError):
+    except (ValueError, RecursionError):
         raise ProviderFailure() from None
 
 
@@ -91,26 +121,19 @@ class Provider:
             "secondary": (secondary_url or base_url).rstrip("/"),
         }
 
-    @asynccontextmanager
-    async def response(self, url: str, payload: dict[str, Any]) -> AsyncIterator[httpx.Response]:
-        async with AsyncExitStack() as stack:
-            response = await stack.enter_async_context(
-                self.client.stream("POST", url, json=payload, timeout=None)
-            )
-            try:
-                yield response
-            finally:
-                # Disconnect cancellation remains active at every cleanup await.
-                with anyio.CancelScope(shield=True):
-                    await stack.aclose()
+    def response(
+        self, url: str, payload: dict[str, Any]
+    ) -> AbstractAsyncContextManager[httpx.Response]:
+        request = self.client.build_request("POST", url, json=payload, timeout=None)
+        return open_upstream(self.client, request)
 
     async def complete(self, model: str, payload: dict[str, Any]) -> Completion:
         async with self.response(f"{self.urls[model]}/provider/{model}", payload) as response:
             if response.status_code != 200:
                 raise ProviderFailure(response.status_code)
             try:
-                return Completion.model_validate_json(await limited_body(response))
-            except ValidationError:
+                return Completion.model_validate(decode_json(await limited_body(response)))
+            except (ValueError, RecursionError):
                 raise ProviderFailure() from None
 
     @asynccontextmanager
@@ -122,6 +145,8 @@ class Provider:
         ) as response:
             if response.status_code != 200:
                 raise ProviderFailure(response.status_code)
-            if not response.headers.get("content-type", "").startswith("text/event-stream"):
+            require_identity_encoding(response)
+            media_type = response.headers.get("content-type", "").partition(";")[0].strip().lower()
+            if media_type != "text/event-stream":
                 raise ProviderFailure()
             yield sse_deltas(response.aiter_bytes())

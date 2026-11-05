@@ -46,10 +46,11 @@ def test_transparent_list_and_authz_zero_downstream_calls(tmp_path: Path) -> Non
         "Connection": "X-Secret",
         "X-Secret": "must-not-forward",
     }
+    listing = rpc("tools/list", {"_meta": {"progressToken": 0, "example/tag": "keep"}})
     with make_client(tmp_path, downstream) as client:
-        listed = client.post("/mcp", json=rpc(), headers=viewer)
+        listed = client.post("/mcp", json=listing, headers=viewer)
         assert listed.json() == {"jsonrpc": "2.0", "id": "request-42", "result": {"tools": []}}
-        assert json.loads(calls[0].content) == rpc()
+        assert json.loads(calls[0].content) == listing
         assert "authorization" not in calls[0].headers
         assert "x-secret" not in calls[0].headers
         assert calls[0].headers.get("connection") != "X-Secret"
@@ -130,9 +131,13 @@ def test_unverified_credentials_never_forward(tmp_path: Path, token: str | None)
         (rpc(request_id=None), -32600),
         ({**rpc(), "jsonrpc": "1.0"}, -32600),
         (rpc("tools/list", {"extra": 1}), -32602),
+        (rpc("tools/list", {"cursor": None}), -32602),
+        (rpc("tools/list", {"_meta": None}), -32602),
         ({**rpc(), "params": None}, -32602),
         (rpc("tools/call", {"name": 12}), -32602),
         (rpc("tools/call", {"name": "echo", "arguments": []}), -32602),
+        (rpc("tools/call", {"name": "echo", "_meta": {"progressToken": True}}), -32602),
+        (rpc("tools/call", {"name": "echo", "_meta": {"progressToken": None}}), -32602),
         (rpc("tools/call", []), -32602),
         (rpc("missing"), -32601),
     ],
@@ -161,6 +166,73 @@ def test_parse_errors_notifications_and_size_limit(tmp_path: Path) -> None:
             assert response.status_code == 204
             assert not response.content
         assert client.post("/mcp", content=b"a" * 65537, headers=headers).status_code == 413
+
+
+async def test_mcp_deadline_cancels_body_read_and_closes_upstream(tmp_path: Path) -> None:
+    reading, closed = asyncio.Event(), asyncio.Event()
+
+    class StalledBody(httpx.AsyncByteStream):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            yield b'{"jsonrpc":"2.0",'
+            reading.set()
+            await asyncio.Event().wait()
+
+        async def aclose(self) -> None:
+            closed.set()
+
+    def downstream(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=StalledBody())
+
+    settings = Settings(database=tmp_path / "quota.db", mcp_timeout=0.05)
+    app = create_app(settings, httpx.MockTransport(downstream))
+    async with app.router.lifespan_context(app), asyncio.timeout(3):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://gateway"
+        ) as client:
+            result = await client.post(
+                "/mcp", json=rpc(), headers={"Authorization": "Bearer dev-viewer-token"}
+            )
+    assert reading.is_set() and closed.is_set()
+    assert result.status_code == 504
+    assert result.json() == {
+        "jsonrpc": "2.0",
+        "id": "request-42",
+        "error": {"code": -32002, "message": "Downstream request timed out"},
+    }
+
+
+@pytest.mark.parametrize("path", ["/mcp", "/v1/completions", "/v1/generate"])
+def test_compressed_upstream_body_is_rejected_before_read(tmp_path: Path, path: str) -> None:
+    read = closed = False
+
+    class CompressedBody(httpx.AsyncByteStream):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            nonlocal read
+            read = True
+            yield b"compressed bytes"
+
+        async def aclose(self) -> None:
+            nonlocal closed
+            closed = True
+
+    def downstream(request: httpx.Request) -> httpx.Response:
+        assert request.headers["accept-encoding"] == "identity"
+        return httpx.Response(
+            200,
+            headers={"Content-Encoding": "gzip", "Content-Type": "text/event-stream"},
+            stream=CompressedBody(),
+        )
+
+    is_mcp = path == "/mcp"
+    token = "dev-viewer-token" if is_mcp else "dev-tenant-key"
+    with make_client(tmp_path, downstream) as client:
+        response = client.post(
+            path,
+            json=rpc() if is_mcp else {"prompt": "hi"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert response.status_code == 502
+    assert closed and not read
 
 
 @pytest.mark.parametrize(
@@ -364,13 +436,16 @@ async def test_disconnect_before_events_start_closes_prefetched_owner() -> None:
 
 @pytest.mark.parametrize(
     ("path", "after_output"),
-    [("/v1/generate", False), ("/v1/completions", False), ("/v1/generate", True)],
+    [("/mcp", False), ("/v1/generate", False), ("/v1/completions", False), ("/v1/generate", True)],
 )
-async def test_client_disconnect_cancels_provider_and_settles(
+async def test_client_disconnect_cancels_upstream_work(
     path: str, after_output: bool, tmp_path: Path
 ) -> None:
     entered, cancelled = asyncio.Event(), asyncio.Event()
     visible, closed = asyncio.Event(), asyncio.Event()
+    is_mcp = path == "/mcp"
+    auth = b"Bearer dev-viewer-token" if is_mcp else b"Bearer dev-tenant-key"
+    payload = json.dumps(rpc() if is_mcp else {"prompt": "x"}).encode()
 
     async def block() -> None:
         entered.set()
@@ -389,7 +464,7 @@ async def test_client_disconnect_cancels_provider_and_settles(
             closed.set()
 
     async def downstream(request: httpx.Request) -> httpx.Response:
-        assert "/primary" in request.url.path
+        assert request.url.path.endswith("/mcp") if is_mcp else "/primary" in request.url.path
         if after_output:
             return httpx.Response(
                 200, headers={"Content-Type": "text/event-stream"}, stream=BlockingStream()
@@ -403,7 +478,7 @@ async def test_client_disconnect_cancels_provider_and_settles(
         "asgi": {"version": "3.0", "spec_version": "2.4"},
         "method": "POST",
         "path": path,
-        "headers": [(b"authorization", b"Bearer dev-tenant-key")],
+        "headers": [(b"authorization", auth)],
         "query_string": b"",
     }
     sent_request = False
@@ -412,7 +487,7 @@ async def test_client_disconnect_cancels_provider_and_settles(
         nonlocal sent_request
         if not sent_request:
             sent_request = True
-            return {"type": "http.request", "body": b'{"prompt":"x"}', "more_body": False}
+            return {"type": "http.request", "body": payload, "more_body": False}
         await entered.wait()
         if after_output:
             await visible.wait()
@@ -427,9 +502,10 @@ async def test_client_disconnect_cancels_provider_and_settles(
         assert cancelled.is_set()
         if after_output:
             assert closed.is_set()
-        quota = app.state.router.quota
-        # The started primary attempt is charged and the unstarted backup is released.
-        await quota.reserve("tenant-demo", 50000 - 257)
+        if not is_mcp:
+            quota = app.state.router.quota
+            # The started primary attempt is charged and the unstarted backup is released.
+            await quota.reserve("tenant-demo", 50000 - 257)
 
 
 def test_verified_keys_share_a_tenant_budget_without_persisting_keys(tmp_path: Path) -> None:

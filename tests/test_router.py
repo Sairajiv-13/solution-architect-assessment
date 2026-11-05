@@ -96,6 +96,53 @@ async def test_real_deadline_cancels_and_joins_primary(tmp_path: Path) -> None:
     assert provider.closed == ["primary", "secondary"]
 
 
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_buffered_primary_result_cannot_pass_expired_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, streaming: bool
+) -> None:
+    loop = asyncio.get_running_loop()
+    clock = loop.time
+    elapsed = 0.0
+    monkeypatch.setattr(loop, "time", lambda: clock() + elapsed)
+
+    class LateProvider(FakeProvider):
+        async def complete(self, model: str, payload: dict[str, Any]) -> Completion:
+            nonlocal elapsed
+            result = await super().complete(model, payload)
+            if model == "primary":
+                elapsed = 4
+            return result
+
+        @asynccontextmanager
+        async def stream(
+            self, model: str, payload: dict[str, Any]
+        ) -> AsyncIterator[AsyncIterator[Delta]]:
+            async with super().stream(model, payload) as source:
+
+                async def buffered() -> AsyncIterator[Delta]:
+                    nonlocal elapsed
+                    async for delta in source:
+                        if model == "primary":
+                            elapsed = 4
+                        yield delta
+
+                yield buffered()
+
+    router, _ = setup(tmp_path)
+    provider = LateProvider()
+    provider.parts["primary"] = [Delta(delta="Late primary!")]
+    router.provider = provider
+    request = Generation(prompt="hi")
+    if streaming:
+        ticket = await router.admit("tenant", request)
+        output = b"".join([event async for event in router.stream(ticket, request, "rid")])
+        assert b"Late primary" not in output
+        assert b'"model": "secondary"' in output
+    else:
+        assert (await router.complete("tenant", request))["model"] == "secondary"
+    assert provider.calls == provider.closed == ["primary", "secondary"]
+
+
 async def test_backup_failure_and_non_retryable_primary(tmp_path: Path) -> None:
     router, provider = setup(tmp_path)
     provider.outcomes = {"primary": ProviderFailure(429), "secondary": ProviderFailure(503)}

@@ -106,7 +106,9 @@ class Quota:
     def finish_sync(self, ticket: str, actual: int) -> None:
         if actual < 0:
             raise ValueError("Negative usage")
-        with closing(self._connect()) as db:
+        with closing(self._connect()) as db, db:
+            # Take the lock before reading the clock so contention cannot shorten the window.
+            db.execute("BEGIN IMMEDIATE")
             # First settlement wins, making cleanup safe to retry.
             db.execute(
                 "UPDATE reservations SET amount=?, finished=? WHERE id=? AND finished IS NULL",
@@ -139,7 +141,8 @@ class Quota:
 
     def recover_offline(self) -> int:
         """Only run with ALL gateway workers stopped; retain full abandoned charges."""
-        with closing(self._connect()) as db:
+        with closing(self._connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
             cursor = db.execute(
                 "UPDATE reservations SET finished=? WHERE finished IS NULL", (self.clock(),)
             )

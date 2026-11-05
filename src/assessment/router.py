@@ -72,9 +72,11 @@ class Router:
             for index, (model, timeout) in enumerate(self.attempts):
                 charges.append(request.attempt_budget)
                 try:
-                    async with asyncio.timeout(timeout) as deadline:
+                    clock = asyncio.get_running_loop().time
+                    deadline = clock() + timeout
+                    async with asyncio.timeout_at(deadline):
                         result = await self.provider.complete(model, request.model_dump())
-                    if deadline.expired():
+                    if clock() >= deadline:
                         raise TimeoutError()
                     charges[-1] = self.reconcile(result.usage, request.attempt_budget)
                     if charges[-1] > request.attempt_budget:
@@ -118,11 +120,12 @@ class Router:
                             # A buffered delta can return before the timeout callback runs.
                             if loop.time() >= deadline:
                                 raise TimeoutError()
-                            try:
-                                # Apply the deadline to upstream awaits, not downstream yields.
-                                async with asyncio.timeout_at(deadline):
-                                    delta = await anext(deltas)
-                            except StopAsyncIteration:
+                            # Apply the deadline to upstream awaits, not downstream yields.
+                            async with asyncio.timeout_at(deadline):
+                                delta = await anext(deltas, None)
+                            if loop.time() >= deadline:
+                                raise TimeoutError()
+                            if delta is None:
                                 break
                             if seen_usage:
                                 raise ProviderFailure()

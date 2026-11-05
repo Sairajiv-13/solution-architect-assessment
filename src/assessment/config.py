@@ -46,6 +46,7 @@ class Settings:
     window: float = 60
     primary_timeout: float = 3
     secondary_timeout: float = 5
+    mcp_timeout: float = 5
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -67,8 +68,15 @@ class Settings:
             window=float(os.getenv("WINDOW_SECONDS", "60")),
             primary_timeout=float(os.getenv("PRIMARY_TIMEOUT", "3")),
             secondary_timeout=float(os.getenv("SECONDARY_TIMEOUT", "5")),
+            mcp_timeout=float(os.getenv("MCP_TIMEOUT", "5")),
         )
-        limits = (result.limit, result.window, result.primary_timeout, result.secondary_timeout)
+        limits = (
+            result.limit,
+            result.window,
+            result.primary_timeout,
+            result.secondary_timeout,
+            result.mcp_timeout,
+        )
         if any(not math.isfinite(value) or value <= 0 for value in limits):
             raise ValueError("Limits and timeouts must be finite and positive")
         if not set(result.roles.values()) <= {"admin", "viewer"}:

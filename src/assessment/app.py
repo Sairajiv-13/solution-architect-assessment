@@ -16,7 +16,7 @@ from starlette.types import Receive, Scope, Send
 
 from assessment.config import Settings, digest
 from assessment.protocol import CallParams, RPCFault, decode_json, parse_rpc, tool_params
-from assessment.provider import Provider, ProviderFailure, limited_body, sse
+from assessment.provider import Provider, ProviderFailure, limited_body, open_upstream, sse
 from assessment.quota import Quota
 from assessment.router import GatewayError, Generation, Router, upstream_error
 
@@ -28,7 +28,7 @@ class RejectUpstreamCookies(DefaultCookiePolicy):
 
 @asynccontextmanager
 async def cancel_on_disconnect(receive: Receive) -> AsyncIterator[None]:
-    """Cancel generation on disconnect even when no response send is in progress."""
+    """Cancel upstream work even when no response send is in progress."""
 
     async def watch(scope: anyio.CancelScope) -> None:
         while (await receive())["type"] != "http.disconnect":
@@ -160,15 +160,23 @@ def create_app(
                 and role != "admin"
             ):
                 raise RPCFault(-32001, "Unauthorized Tool Call", envelope.id)
-            async with request.app.state.client.stream(
+            client: httpx.AsyncClient = request.app.state.client
+            upstream_request = client.build_request(
                 "POST",
                 config.downstream,
                 content=raw,
                 headers={"Content-Type": "application/json", "Accept": "application/json"},
-            ) as upstream:
-                if upstream.status_code != 200:
-                    raise ProviderFailure()
-                wire = await limited_body(upstream)
+                timeout=None,
+            )
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + config.mcp_timeout
+            async with cancel_on_disconnect(request.receive), asyncio.timeout_at(deadline):
+                async with open_upstream(client, upstream_request) as upstream:
+                    if upstream.status_code != 200:
+                        raise ProviderFailure()
+                    wire = await limited_body(upstream)
+                if loop.time() >= deadline:
+                    raise TimeoutError()
             # Validate the response envelope; do not expose arbitrary HTML or provider error bodies.
             payload = mt.JSONRPCMessage.model_validate(decode_json(wire), strict=True).root
             if (
@@ -188,6 +196,11 @@ def create_app(
             return JSONResponse(
                 exc.payload(), status_code=400 if exc.code in (-32700, -32600) else 200
             )
+        except (TimeoutError, httpx.TimeoutException):
+            fault = RPCFault(
+                -32002, "Downstream request timed out", envelope.id if envelope else None
+            )
+            return JSONResponse(fault.payload(), status_code=504)
         except (httpx.HTTPError, ProviderFailure, ValueError, RecursionError):
             fault = RPCFault(-32002, "Downstream unavailable", envelope.id if envelope else None)
             return JSONResponse(fault.payload(), status_code=502)

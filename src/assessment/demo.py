@@ -89,6 +89,7 @@ async def http_demo() -> None:
             "WINDOW_SECONDS": "60",
             "PRIMARY_TIMEOUT": "3.0",
             "SECONDARY_TIMEOUT": "5.0",
+            "MCP_TIMEOUT": "5.0",
             # Use the base Windows interpreter to avoid an extra venv launcher process.
             "PYTHONPATH": os.pathsep.join(sys.path),
         }

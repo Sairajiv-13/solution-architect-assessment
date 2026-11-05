@@ -1,9 +1,17 @@
 """Strict JSON-RPC validation shared by the HTTP proxy and stdio ingress."""
 
 import json
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, ValidationError
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StrictStr,
+    ValidationError,
+)
 
 
 class RPCFault(Exception):
@@ -27,17 +35,33 @@ class Envelope(BaseModel):
     params: dict[str, Any] | list[Any] | None = None
 
 
-class ListParams(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    cursor: StrictStr | None = None
-    meta: dict[str, Any] | None = Field(default=None, alias="_meta")
+def reject_explicit_null(value: object) -> object:
+    if value is None:
+        raise ValueError("Omit this field instead of using null")
+    return value
 
 
-class CallParams(BaseModel):
+class RequestMeta(BaseModel):
+    model_config = ConfigDict(extra="allow", strict=True)
+    progress_token: Annotated[
+        StrictStr | StrictInt | None, BeforeValidator(reject_explicit_null)
+    ] = Field(default=None, alias="progressToken")
+
+
+class ToolParams(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+    meta: Annotated[RequestMeta | None, BeforeValidator(reject_explicit_null)] = Field(
+        default=None, alias="_meta"
+    )
+
+
+class ListParams(ToolParams):
+    cursor: Annotated[StrictStr | None, BeforeValidator(reject_explicit_null)] = None
+
+
+class CallParams(ToolParams):
     name: StrictStr = Field(min_length=1)
     arguments: dict[str, Any] = Field(default_factory=dict)
-    meta: dict[str, Any] | None = Field(default=None, alias="_meta")
 
 
 def decode_json(raw: str | bytes) -> Any:
