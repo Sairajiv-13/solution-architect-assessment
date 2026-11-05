@@ -1,0 +1,40 @@
+[project]
+name = "solution-architect-assessment"
+version = "0.1.0"
+description = "Runnable MCP and LLM gateway assessment with deterministic local providers"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "anyio==4.16.0",
+  "mcp==1.25.0",
+  "pydantic==2.12.5",
+  "fastapi==0.124.4",
+  "starlette==0.50.0",
+  "httpx==0.28.1",
+  "uvicorn==0.38.0",
+  "python-dotenv==1.2.1",
+]
+
+[dependency-groups]
+dev = ["pytest==9.0.2", "pytest-asyncio==1.3.0", "ruff==0.14.10", "mypy==1.19.1"]
+
+[build-system]
+requires = ["hatchling==1.28.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/assessment"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src", "tests"]
