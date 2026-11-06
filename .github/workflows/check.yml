@@ -22,6 +22,15 @@ jobs:
       - run: uv run ruff format --check src tests
       - run: uv run mypy
       - run: uv run python -m assessment.demo
+      # The clinical server runs in its own environment: its dependency set
+      # conflicts with the gateway's pinned set, so it is never installed
+      # into the project venv. Linux only; Windows coverage stays local.
+      - name: Run the demo against the real clinical MCP server
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          uv venv .venv-clinical
+          uv pip install --python .venv-clinical/bin/python git+https://github.com/Sairajiv-13/clinical-trials-mcp-server.git
+          CLINICAL_MCP_PYTHON="$PWD/.venv-clinical/bin/python" uv run python -m assessment.demo
   container:
     if: github.event_name == 'push'
     needs: verify
