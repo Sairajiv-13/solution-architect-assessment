@@ -12,6 +12,7 @@ EMAIL = re.compile(
     r"[A-Za-z]{2,63}))"
 )
 SSN = re.compile(r"(?<![0-9])[0-9]{3}([ -])[0-9]{2}\1[0-9]{4}(?![0-9])")
+COMPACT_SSN = re.compile(r"(?<![0-9])[0-9]{9}(?![0-9])")
 DIGITS = re.compile(r"[0-9]+")
 NUMERIC_SUFFIX = re.compile(r"[0-9][0-9-]*$")
 
@@ -75,6 +76,7 @@ class PIIScanner:
         # Email lookahead also finds addresses whose local parts overlap a previous domain.
         spans = [match.span(1) for match in EMAIL.finditer(value)]
         spans.extend(match.span() for match in SSN.finditer(value))
+        spans.extend(match.span() for match in COMPACT_SSN.finditer(value))
         spans.extend(card_spans(value))
         output: list[str] = []
         end = 0

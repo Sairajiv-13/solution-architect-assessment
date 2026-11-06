@@ -1,6 +1,6 @@
 [project]
 name = "solution-architect-assessment"
-version = "1.0.0"
+version = "1.0.1"
 description = "Runnable MCP and LLM gateway assessment with deterministic local providers"
 requires-python = ">=3.12,<3.14"
 dependencies = [

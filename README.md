@@ -65,8 +65,8 @@ Without a verified cache, the gateway uses UTF-8 byte length as a conservative i
 Build and run the loopback demo in the container.
 
 ```sh
-docker build -t solution-architect-assessment:v1.0.0 .
-docker run --rm solution-architect-assessment:v1.0.0
+docker build -t solution-architect-assessment:v1.0.1 .
+docker run --rm solution-architect-assessment:v1.0.1
 ```
 
 The tagged GitHub release includes the Linux amd64 image as a compressed Docker archive. Load it with `docker load -i solution-architect-assessment-linux-amd64.tar.gz`. [Releases](https://github.com/Sairajiv-13/solution-architect-assessment/releases)
@@ -115,7 +115,7 @@ The proxy validates tool arguments as objects and progress tokens as strings or 
 `pii.py` scans the text separately from the SSE parser. It recognizes these patterns.
 
 - **Email.** A local part of 1 to 64 ASCII letters, digits, or `._%+-`, followed by `@` and a dotted ASCII domain. Each domain label has 1 to 63 characters and no edge hyphens. The final label has 2 to 63 ASCII letters. Punctuation outside the match is preserved.
-- **SSN.** Three, two, and four ASCII digits separated by consistent spaces or hyphens. Bare nine-digit IDs remain outside this rule.
+- **SSN.** Three, two, and four ASCII digits separated by consistent spaces or hyphens, or a run of exactly nine ASCII digits. A compact match can mask a nine-digit order ID or phone fragment. The rule preserves longer uninterrupted digit runs unless another rule matches them.
 - **Card.** From 13 to 19 ASCII digits with optional single spaces or hyphens between digit groups. Redaction requires a passing Luhn checksum and more than one distinct digit. Checksum-valid order IDs can still match.
 
 The scanner holds uncertain text until a delimiter or a clean end of stream. It merges overlapping matches into one `[REDACTED]` marker and flushes incomplete candidates at a clean end. An upstream failure drops pending text. At character 257, it emits one marker and suppresses the candidate through its boundary, including spaced numeric continuations. This may also suppress a long ordinary word or trailing spaces.
@@ -143,7 +143,7 @@ The quota accounts for requests as follows.
 uv run python -m assessment.quota runtime/quota.sqlite3 --workers-stopped
 ```
 
-Recovery starts a fresh settlement window. The flag records the operator's confirmation that all gateway workers have stopped.
+Use the deployed database path in place of the example. Recovery starts a fresh settlement window. The flag records the operator's confirmation that all gateway workers have stopped. See the [quota decision record](docs/adr/0001-sqlite-wal.md) for the capacity and recovery tradeoff.
 
 `router.py` gives the primary three seconds. A 429 or timeout starts one backup attempt with a separate deadline of five seconds by default. Other failures return immediately. `PROVIDER_URL` and `SECONDARY_PROVIDER_URL` can point to separate services. The demo uses two routes on one mock. Client cancellation closes local work and settles usage for the attempts that started. A remote provider may continue processing or billing after local cancellation.
 
@@ -171,7 +171,7 @@ The demo uses loopback, synthetic bearer credentials, and a local SQLite file. A
 
 SQLite WAL fits workers on one host with a local disk. Use a transactional shared store for replicas on separate hosts. A database error denies work. The scanner covers the stated ASCII patterns, so a separate policy is needed for Unicode or obfuscated data. [SQLite WAL deployment limits](https://www.sqlite.org/wal.html)
 
-The [decision records](docs/adr) cover SQLite WAL, Luhn, the 3,000 ms deadline, FastAPI, and the deployment scope.
+The [decision records](docs/adr) cover SQLite WAL, Luhn, the 3,000 ms deadline, FastAPI, the deployment scope, and compact SSNs.
 
 ## Submission
 

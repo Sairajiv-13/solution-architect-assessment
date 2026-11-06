@@ -405,7 +405,15 @@ def test_successful_stream_fallback_redacts_without_leaking_chunks(tmp_path: Pat
         calls.append(request.url.path)
         if "primary" in request.url.path:
             return httpx.Response(429)
-        deltas = ["Hello: ", "demo@", "example.com", ";123-45-", "6789;4111 ", "1111 1111 1111!"]
+        deltas = [
+            "Hello: ",
+            "demo@",
+            "example.com",
+            ";123-45-",
+            "6789;1234",
+            "56789;4111 ",
+            "1111 1111 1111!",
+        ]
         wire = "".join(f"data: {json.dumps({'delta': part})}\n\n" for part in deltas)
         return httpx.Response(
             200,
@@ -424,7 +432,7 @@ def test_successful_stream_fallback_redacts_without_leaking_chunks(tmp_path: Pat
             json.loads(line[6:]) for line in result.text.splitlines() if line.startswith("data: ")
         ]
         assert "".join(part.get("text", "") for part in data) == (
-            "Hello: [REDACTED];[REDACTED];[REDACTED]!"
+            "Hello: [REDACTED];[REDACTED];[REDACTED];[REDACTED]!"
         )
         assert data[-1]["model"] == "secondary"
         assert calls == ["/provider/primary/stream", "/provider/secondary/stream"]
