@@ -41,6 +41,7 @@ def redact(parts: list[str], limit: int = 256) -> str:
         "123-45-6789",
         "123 45 6789",
         "123456789",
+        "123456789",
         "4111111111111111",
         "4111 1111 1111 1111",
         "4111-1111-1111-1111",
@@ -64,6 +65,9 @@ def test_every_two_part_split(secret: str) -> None:
     [
         ("Ordinary text. Price 12.50; count 42.", "Ordinary text. Price 12.50; count 42."),
         ("a@b.com,123-45-6789;4111111111111111!", "[REDACTED],[REDACTED];[REDACTED]!"),
+        ("SSN 123456789.", "SSN [REDACTED]."),
+        ("Call reference 123456789 for help.", "Call reference [REDACTED] for help."),
+        ("Dial 1234567890 for support.", "Dial 1234567890 for support."),
         ("unfinished@host", "unfinished@host"),
         ("123-45-", "123-45-"),
         ("4111 1111", "4111 1111"),
