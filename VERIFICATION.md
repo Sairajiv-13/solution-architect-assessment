@@ -10,7 +10,7 @@ Executed November 5, 2026 on Windows x64 with CPython 3.12.14 and `uv` 0.13.7. T
 | `ruff check src tests` | All checks passed in the locked environment. |
 | `ruff format --check src tests` | All 17 Python files already formatted. |
 | `mypy` and `mypy --platform linux` | No issues in 17 source and test files. |
-| `pytest -q -p no:cacheprovider` | **133 passed in 5.75 s** after the final review. Starlette reported one dependency deprecation warning for its AnyIO `BlockingPortal` alias. |
+| `pytest -q -p no:cacheprovider` | **140 passed** in the extended gateway suite. Starlette reports a dependency deprecation warning for its AnyIO `BlockingPortal` alias. |
 | `python -u -m assessment.demo` | Exited 0. Exercised the stdio handshake and both tools, JSON-RPC `-32602` and `-32001` errors, transparent tool listing, primary success, 429 fallback, 3-second timeout fallback, sanitized backup failure, and all three redactions. |
 | `git diff --check` | Passed on the review changes. |
 
@@ -34,10 +34,22 @@ A loopback MCP upstream sent four bytes every 45 ms. In the review build, a 200 
 The demo timed seven requests from immediately before sending the HTTP request to parsing the first SSE text delta at the client. These are end-to-end **time to first safe output** samples in milliseconds:
 
 ```text
-30.827  15.437  16.892  15.593  15.623  14.321  14.621
+35.326  31.147  28.677  35.282  30.617  30.725  34.569
 ```
 
-Minimum **14.321 ms**, median **15.593 ms**, maximum **30.827 ms**. This interval includes loopback HTTP, quota admission, provider framing, and scanning. Upstream time to first token measures a separate interval at the provider. Run `uv run python -m assessment.demo` to repeat the procedure.
+With the clinical bridge enabled and `cl100k_base` loaded from the verified cache, the median client time to first safe output was **31.147 ms**. The median direct mock time to its first text delta was **12.837 ms**, measured in separate requests. These are loopback measurements with synthetic text. The 429 fallback completed in **78.762 ms** and the 3,000 ms timeout fallback completed in **3,055.142 ms**, one request per scenario.
+
+`uv run python -m assessment.benchmark` reproduced these scanner and quota checks.
+
+| Check | Observed result |
+| --- | --- |
+| Eight synthetic positive cases at every split | 169 of 169 redacted as expected |
+| Four negative controls at every split | 116 of 116 unchanged |
+| 65,712 streamed text bytes | 48 redactions, 91,899 peak traced Python bytes |
+| 2,102,784 streamed text bytes | 1,536 redactions, 95,554 peak traced Python bytes |
+| SQLite boundary | Token 50,000 admitted, token 50,001 denied, full budget restored at 60 seconds |
+
+The memory probe consumes events without collecting output and measures Python allocations with `tracemalloc`. The unit tests assert the 256-character scanner limit separately. The first safe output test holds the mock's second delta behind an event and checks that the first delta arrives before releasing it.
 
 ## Submission review
 

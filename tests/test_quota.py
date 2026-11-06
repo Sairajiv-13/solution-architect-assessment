@@ -19,6 +19,20 @@ class Clock:
         return self.now
 
 
+def test_default_limit_admits_token_50000_and_evicts_at_window(tmp_path: Path) -> None:
+    clock = Clock()
+    quota = Quota(tmp_path / "quota.db", clock=clock)
+    quota.initialize()
+    for batch in (49_999, 1):
+        quota.finish_sync(quota.reserve_sync("tenant", batch), batch)
+    clock.now += 59.999
+    with pytest.raises(QuotaExceeded):
+        quota.reserve_sync("tenant", 1)
+    clock.now += 0.001
+    quota.reserve_sync("tenant", 50_000)
+    assert rows(quota.path) == [(50_000, None)]
+
+
 @pytest.mark.parametrize("recover", [False, True])
 def test_settlement_samples_clock_after_writer_lock(tmp_path: Path, recover: bool) -> None:
     clock = Clock()

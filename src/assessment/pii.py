@@ -2,6 +2,7 @@
 
 import re
 import string
+from collections.abc import Iterator
 
 REDACTED = "[REDACTED]"
 TOKEN_CHARS = frozenset(string.ascii_letters + string.digits + "._%+-@")
@@ -10,9 +11,37 @@ EMAIL = re.compile(
     r"(?:[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?\.)+"
     r"[A-Za-z]{2,63}))"
 )
-SSN = re.compile(r"[0-9]{3}-[0-9]{2}-[0-9]{4}")
-CARD = re.compile(r"[0-9](?:[ -]?[0-9]){12,}")
+SSN = re.compile(r"(?<![0-9])[0-9]{3}([ -])[0-9]{2}\1[0-9]{4}(?![0-9])")
+DIGITS = re.compile(r"[0-9]+")
 NUMERIC_SUFFIX = re.compile(r"[0-9][0-9-]*$")
+
+
+def passes_luhn(digits: str) -> bool:
+    total = 0
+    for position, char in enumerate(reversed(digits)):
+        value = ord(char) - ord("0")
+        if position % 2:
+            value *= 2
+            if value > 9:
+                value -= 9
+        total += value
+    return total % 10 == 0 and len(set(digits)) > 1
+
+
+def card_spans(value: str) -> Iterator[tuple[int, int]]:
+    groups = list(DIGITS.finditer(value))
+    for i, first in enumerate(groups):
+        digits = ""
+        end = first.start()
+        for group in groups[i:]:
+            if end != first.start() and value[end : group.start()] not in (" ", "-"):
+                break
+            digits += group.group()
+            if len(digits) > 19:
+                break
+            end = group.end()
+            if len(digits) >= 13 and passes_luhn(digits):
+                yield first.start(), end
 
 
 class PIIScanner:
@@ -45,7 +74,8 @@ class PIIScanner:
         # Scan the original text so masking an SSN cannot hide an overlapping card.
         # Email lookahead also finds addresses whose local parts overlap a previous domain.
         spans = [match.span(1) for match in EMAIL.finditer(value)]
-        spans.extend(match.span() for pattern in (SSN, CARD) for match in pattern.finditer(value))
+        spans.extend(match.span() for match in SSN.finditer(value))
+        spans.extend(card_spans(value))
         output: list[str] = []
         end = 0
         for start, stop in sorted(spans):

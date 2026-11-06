@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import AsyncExitStack
 from typing import Any, Literal
 
@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictStr
 from assessment.pii import PIIScanner
 from assessment.provider import Provider, ProviderFailure, Usage, sse
 from assessment.quota import Quota, QuotaExceeded
+from assessment.token_count import byte_estimate
 
 
 class Generation(BaseModel):
@@ -51,13 +52,18 @@ class Router:
         provider: Provider,
         primary_timeout: float = 3,
         secondary_timeout: float = 5,
+        count_input: Callable[[str], int] = byte_estimate,
     ):
         self.quota, self.provider = quota, provider
         self.attempts = (("primary", primary_timeout), ("secondary", secondary_timeout))
+        self.count_input = count_input
+
+    def budget(self, request: Generation) -> int:
+        return self.count_input(request.prompt) + request.max_tokens
 
     async def admit(self, tenant: str, request: Generation) -> str:
         try:
-            return await self.quota.reserve(tenant, 2 * request.attempt_budget)
+            return await self.quota.reserve(tenant, 2 * self.budget(request))
         except QuotaExceeded:
             raise GatewayError("quota_exceeded", "Tenant token budget exhausted", 429) from None
 
@@ -67,10 +73,11 @@ class Router:
 
     async def complete(self, tenant: str, request: Generation) -> dict[str, Any]:
         ticket = await self.admit(tenant, request)
+        budget = self.budget(request)
         charges: list[int] = []
         try:
             for index, (model, timeout) in enumerate(self.attempts):
-                charges.append(request.attempt_budget)
+                charges.append(budget)
                 try:
                     clock = asyncio.get_running_loop().time
                     deadline = clock() + timeout
@@ -78,8 +85,8 @@ class Router:
                         result = await self.provider.complete(model, request.model_dump())
                     if clock() >= deadline:
                         raise TimeoutError()
-                    charges[-1] = self.reconcile(result.usage, request.attempt_budget)
-                    if charges[-1] > request.attempt_budget:
+                    charges[-1] = self.reconcile(result.usage, budget)
+                    if charges[-1] > budget:
                         # Record the overrun as debt rather than discarding reported usage.
                         raise ProviderFailure()
                     scanner = PIIScanner()
@@ -100,11 +107,12 @@ class Router:
         self, ticket: str, request: Generation, request_id: str
     ) -> AsyncGenerator[bytes, None]:
         charges: list[int] = []
+        budget = self.budget(request)
         visible = False
         settled = False
         try:
             for index, (model, timeout) in enumerate(self.attempts):
-                charges.append(request.attempt_budget)
+                charges.append(budget)
                 scanner = PIIScanner()
                 loop = asyncio.get_running_loop()
                 deadline = loop.time() + timeout
@@ -132,7 +140,7 @@ class Router:
                             if delta.usage is not None:
                                 seen_usage = True
                                 reported_usage = delta.usage
-                                if reported_usage.total > request.attempt_budget:
+                                if reported_usage.total > budget:
                                     charges[-1] = reported_usage.total
                                     raise ProviderFailure()
                             safe = scanner.feed(delta.delta)
@@ -140,7 +148,7 @@ class Router:
                                 visible = True
                                 yield sse("delta", {"text": safe})
                         # A usage event becomes authoritative only after valid stream termination.
-                        charges[-1] = self.reconcile(reported_usage, request.attempt_budget)
+                        charges[-1] = self.reconcile(reported_usage, budget)
                         safe = scanner.finish()
                         if safe:
                             visible = True

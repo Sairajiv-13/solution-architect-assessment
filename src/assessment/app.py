@@ -19,6 +19,7 @@ from assessment.protocol import CallParams, RPCFault, decode_json, parse_rpc, to
 from assessment.provider import Provider, ProviderFailure, limited_body, open_upstream, sse
 from assessment.quota import Quota
 from assessment.router import GatewayError, Generation, Router, upstream_error
+from assessment.token_count import input_counter
 
 
 class RejectUpstreamCookies(DefaultCookiePolicy):
@@ -103,6 +104,7 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         quota = Quota(config.database, config.limit, config.window)
         await asyncio.to_thread(quota.initialize)
+        tokenizer, count_input = await asyncio.to_thread(input_counter)
         async with httpx.AsyncClient(
             transport=transport,
             timeout=5,
@@ -116,7 +118,9 @@ def create_app(
                 Provider(client, config.provider, config.secondary_provider),
                 config.primary_timeout,
                 config.secondary_timeout,
+                count_input,
             )
+            app.state.tokenizer = tokenizer
             yield
 
     app = FastAPI(title="Assessment gateways", lifespan=lifespan)

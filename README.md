@@ -44,6 +44,33 @@ curl.exe -N http://127.0.0.1:8000/v1/generate -H "Authorization: Bearer dev-tena
 
 Other local mock scenarios are `ok`, `primary_timeout`, `backup_failure`, and `broken_stream`.
 
+## Clinical server integration
+
+Install the [clinical server](https://github.com/Sairajiv-13/clinical-trials-mcp-server) into its own Python environment. Set `CLINICAL_MCP_PYTHON` to that environment's Python executable and run `uv run python -m assessment.demo` from this repository.
+
+The gateway still forwards JSON-RPC over HTTP. The downstream adapter opens an SDK stdio session to the clinical server. The demo lists its tools and calls `get_trial` through the authenticated gateway. The clinical process reads from a local synthetic registry fixture for this run.
+
+## Tokenizer and container
+
+The gateway uses `cl100k_base` when `TIKTOKEN_CACHE_DIR` points to a cache containing the pinned vocabulary. Populate the cache once with the same environment variable set.
+
+```text
+uv run python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
+uv run python -m assessment.demo
+uv run python -m assessment.benchmark
+```
+
+Without a verified cache, the gateway uses UTF-8 byte length as a conservative input estimate. The mock and gateway use the same counter. Real provider usage settles the reservation when reported.
+
+Build and run the loopback demo in the container.
+
+```sh
+docker build -t solution-architect-assessment:v1.0.0 .
+docker run --rm solution-architect-assessment:v1.0.0
+```
+
+The tagged GitHub release includes the Linux amd64 image as a compressed Docker archive. Load it with `docker load -i solution-architect-assessment-linux-amd64.tar.gz`. [Releases](https://github.com/Sairajiv-13/solution-architect-assessment/releases)
+
 ## Architecture and transport scope
 
 ```mermaid
@@ -88,8 +115,8 @@ The proxy validates tool arguments as objects and progress tokens as strings or 
 `pii.py` scans the text separately from the SSE parser. It recognizes these patterns.
 
 - **Email.** A local part of 1 to 64 ASCII letters, digits, or `._%+-`, followed by `@` and a dotted ASCII domain. Each domain label has 1 to 63 characters and no edge hyphens. The final label has 2 to 63 ASCII letters. Punctuation outside the match is preserved.
-- **SSN.** Any ASCII `DDD-DD-DDDD` substring.
-- **Card.** At least 13 ASCII digits, with optional single spaces or hyphens between digits. The scanner redacts these candidates regardless of Luhn checksum.
+- **SSN.** Three, two, and four ASCII digits separated by consistent spaces or hyphens. Bare nine-digit IDs remain outside this rule.
+- **Card.** From 13 to 19 ASCII digits with optional single spaces or hyphens between digit groups. Redaction requires a passing Luhn checksum and more than one distinct digit. Checksum-valid order IDs can still match.
 
 The scanner holds uncertain text until a delimiter or a clean end of stream. It merges overlapping matches into one `[REDACTED]` marker and flushes incomplete candidates at a clean end. An upstream failure drops pending text. At character 257, it emits one marker and suppresses the candidate through its boundary, including spaced numeric continuations. This may also suppress a long ordinary word or trailing spaces.
 
@@ -105,7 +132,7 @@ The default budget is 50,000 tokens per tenant per 60 seconds. The gateway hashe
 
 The quota accounts for requests as follows.
 
-1. Use the UTF-8 byte length of the prompt as the input token estimate. The mock reports synthetic usage and counts each output character as one token. A model adapter would use its tokenizer and include messages, tool schemas, and provider overhead.
+1. Count prompt tokens with the configured local tokenizer or estimate them from UTF-8 bytes. The mock reports synthetic usage and counts each output character as one token. A model adapter also needs to budget its messages, tool schemas, and provider overhead.
 2. Reserve **two times** `(input estimate + max_tokens)` atomically, allowing at most a primary and a backup attempt. Deny before contacting any provider if the reservation does not fit. This deliberately reduces concurrency for requests that never need the backup.
 3. An attempt starts with its full allocation charged. On successful authoritative usage, replace it with actual input plus output tokens. Missing usage, failed/429/timed-out attempts, and cancelled started attempts retain their full allocation. Unstarted backup allocations are released. This conservatively counts failures even if a provider might not bill them.
 4. If reported usage exceeds an attempt allocation, record the usage as debt, return a sanitized error, and enforce the debt on later admissions. Usage above SQLite's signed 64-bit maximum settles at that maximum, which exhausts every supported tenant budget for the window. Admission subtracts charges using Python integers inside the same write transaction so multiple large debts can be evaluated safely. Exact upstream billing limits require a provider tokenizer and an enforced output contract.
@@ -143,6 +170,8 @@ Three paths show the key decisions. `call_tool` returns a protocol error for inv
 The demo uses loopback, synthetic bearer credentials, and a local SQLite file. A deployment would use TLS, verified workload identities, managed credentials, and an egress allowlist for the configured upstreams. Trust forwarded headers only from a known proxy and block direct access around it. For a failed connection, check identity, TLS hostname and trust, DNS, egress policy, and upstream health separately.
 
 SQLite WAL fits workers on one host with a local disk. Use a transactional shared store for replicas on separate hosts. A database error denies work. The scanner covers the stated ASCII patterns, so a separate policy is needed for Unicode or obfuscated data. [SQLite WAL deployment limits](https://www.sqlite.org/wal.html)
+
+The [decision records](docs/adr) cover SQLite WAL, Luhn, the 3,000 ms deadline, FastAPI, and the deployment scope.
 
 ## Submission
 

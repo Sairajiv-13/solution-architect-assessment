@@ -17,6 +17,8 @@ from mcp.client.stdio import stdio_client
 from mcp.shared.exceptions import McpError
 
 from assessment.config import digest
+from assessment.provider import Provider
+from assessment.token_count import input_counter
 
 
 async def stdio_demo() -> None:
@@ -94,6 +96,9 @@ async def http_demo() -> None:
             "PYTHONPATH": os.pathsep.join(sys.path),
         }
         executable = sys.executable
+        clinical = bool(env.get("CLINICAL_MCP_PYTHON"))
+        if clinical:
+            env["CT_MCP_BASE_URL"] = provider_url + "/registry"
         creationflags = 0
         if sys.platform == "win32":
             executable = str(Path(sys.base_prefix) / "python.exe")
@@ -133,7 +138,29 @@ async def http_demo() -> None:
                         headers=viewer,
                         json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
                     )
-                    assert len(listed.json()["result"]["tools"]) == 2
+                    tools = {tool["name"] for tool in listed.json()["result"]["tools"]}
+                    assert {"echo", "admin_reset_key"} <= tools
+                    if clinical:
+                        assert "get_trial" in tools
+                        study = await client.post(
+                            gateway_url + "/mcp",
+                            headers=viewer,
+                            json={
+                                "jsonrpc": "2.0",
+                                "id": 3,
+                                "method": "tools/call",
+                                "params": {
+                                    "name": "get_trial",
+                                    "arguments": {
+                                        "nct_id": "NCT06001122",
+                                    },
+                                },
+                            },
+                        )
+                        assert (
+                            study.json()["result"]["structuredContent"]["nct_id"] == "NCT06001122"
+                        )
+                        print("clinical MCP: listed tools and fetched a synthetic study over stdio")
                     denied = await client.post(
                         gateway_url + "/mcp",
                         headers=viewer,
@@ -147,11 +174,13 @@ async def http_demo() -> None:
                     assert denied.json()["error"]["code"] == -32001
                     print("HTTP MCP: transparent list; viewer admin call denied with -32001")
                     headers = {"Authorization": "Bearer dev-tenant-key"}
+                    print(f"input token counter: {input_counter()[0]}")
                     for scenario, expected in [
                         ("ok", "primary"),
                         ("primary429", "secondary"),
                         ("primary_timeout", "secondary"),
                     ]:
+                        started = time.perf_counter()
                         response = await client.post(
                             gateway_url + "/v1/completions",
                             headers=headers,
@@ -159,7 +188,8 @@ async def http_demo() -> None:
                         )
                         assert response.status_code == 200, response.text
                         assert response.json()["model"] == expected
-                        print(f"completion {scenario}: {expected}")
+                        elapsed = (time.perf_counter() - started) * 1000
+                        print(f"completion {scenario}: {expected} in {elapsed:.3f} ms")
                     failed = await client.post(
                         gateway_url + "/v1/completions",
                         headers=headers,
@@ -169,7 +199,15 @@ async def http_demo() -> None:
                     assert failed.json()["error"]["code"] == "upstream_unavailable"
                     print("backup failure: sanitized HTTP 502")
                     samples: list[float] = []
+                    upstream_samples: list[float] = []
+                    provider = Provider(client, provider_url)
                     for _ in range(7):
+                        started = time.perf_counter()
+                        async with provider.stream(
+                            "primary", {"prompt": "Synthetic demo"}
+                        ) as stream:
+                            assert (await anext(stream)).delta
+                            upstream_samples.append((time.perf_counter() - started) * 1000)
                         started = time.perf_counter()
                         first = True
                         output: list[str] = []
@@ -204,6 +242,9 @@ async def http_demo() -> None:
                                 "median": round(statistics.median(samples), 3),
                                 "max": round(max(samples), 3),
                                 "samples": [round(value, 3) for value in samples],
+                                "upstream_first_delta_median": round(
+                                    statistics.median(upstream_samples), 3
+                                ),
                             }
                         )
                     )

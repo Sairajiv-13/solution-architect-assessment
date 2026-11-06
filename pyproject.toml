@@ -1,6 +1,6 @@
 [project]
 name = "solution-architect-assessment"
-version = "0.1.0"
+version = "1.0.0"
 description = "Runnable MCP and LLM gateway assessment with deterministic local providers"
 requires-python = ">=3.12,<3.14"
 dependencies = [
@@ -12,6 +12,7 @@ dependencies = [
   "httpx==0.28.1",
   "uvicorn==0.38.0",
   "python-dotenv==1.2.1",
+  "tiktoken==0.12.0",
 ]
 
 [dependency-groups]

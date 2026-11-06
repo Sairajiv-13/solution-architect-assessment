@@ -22,3 +22,26 @@ jobs:
       - run: uv run ruff format --check src tests
       - run: uv run mypy
       - run: uv run python -m assessment.demo
+  container:
+    if: github.event_name == 'push'
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and run the container
+        run: |
+          docker build -t solution-architect-assessment:"$GITHUB_REF_NAME" .
+          docker run --rm solution-architect-assessment:"$GITHUB_REF_NAME"
+      - name: Attach the container to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          docker save solution-architect-assessment:"$GITHUB_REF_NAME" | gzip > solution-architect-assessment-linux-amd64.tar.gz
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" \
+            --notes "Load the Linux amd64 image with docker load, then run it to exercise the loopback demo." \
+            solution-architect-assessment-linux-amd64.tar.gz

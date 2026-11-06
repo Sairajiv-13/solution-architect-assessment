@@ -96,6 +96,33 @@ def test_upstream_cookie_is_not_replayed_across_callers(tmp_path: Path) -> None:
     assert cookies == [None, None]
 
 
+def test_mcp_auth_matrix_checks_each_operation(tmp_path: Path) -> None:
+    forwarded: list[str] = []
+
+    def downstream(request: httpx.Request) -> httpx.Response:
+        data = json.loads(request.content)
+        forwarded.append(data["method"])
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": data["id"], "result": {}})
+
+    operations = (
+        rpc(),
+        rpc("tools/call", {"name": "echo"}),
+        rpc("tools/call", {"name": "admin_reset_key"}),
+    )
+    with make_client(tmp_path, downstream) as client:
+        for token in (None, "wrong-token", "dev-viewer-token", "dev-admin-token"):
+            for index, request in enumerate(operations):
+                headers = {"Authorization": f"Bearer {token}"} if token else {}
+                before = len(forwarded)
+                reply = client.post("/mcp", json=request, headers=headers)
+                if token in (None, "wrong-token"):
+                    assert reply.status_code == 401 and len(forwarded) == before
+                elif token == "dev-viewer-token" and index == 2:
+                    assert reply.json()["error"]["code"] == -32001 and len(forwarded) == before
+                else:
+                    assert reply.status_code == 200 and len(forwarded) == before + 1
+
+
 @pytest.mark.parametrize(
     "token",
     [

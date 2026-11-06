@@ -11,7 +11,7 @@ from assessment.provider import ProviderFailure, sse_deltas
     ("value", "expected"),
     [
         ("1 123@example.com!", "1 [REDACTED]!"),
-        ("4111 123-45-6789!", "[REDACTED]!"),
+        ("4111 123-45-6789!", "4111 [REDACTED]!"),
         ("foo@bar.com.baz@example.net!", "[REDACTED]!"),
         ("a" * 255 + "4111 1111 1111 1111!", "[REDACTED]!"),
     ],
@@ -39,6 +39,7 @@ def redact(parts: list[str], limit: int = 256) -> str:
         "demo@example.com",
         "first.last+tag@sub.example.org",
         "123-45-6789",
+        "123 45 6789",
         "4111111111111111",
         "4111 1111 1111 1111",
         "4111-1111-1111-1111",
@@ -66,10 +67,12 @@ def test_every_two_part_split(secret: str) -> None:
         ("123-45-", "123-45-"),
         ("4111 1111", "4111 1111"),
         ("a@b.com.", "[REDACTED]."),
-        ("12345678901234567890123456!", "[REDACTED]!"),
+        ("12345678901234567890123456!", "12345678901234567890123456!"),
+        ("Order 4111111111111112!", "Order 4111111111111112!"),
+        ("Order 4111-1111-1111-1112!", "Order 4111-1111-1111-1112!"),
         ("4111 1111 1111 1111 next", "[REDACTED] next"),
         ("card4111 1111 1111 1111!", "card[REDACTED]!"),
-        ("x123-45-6789 4111111111111111!", "x[REDACTED]!"),
+        ("x123-45-6789 4111111111111111!", "x[REDACTED] [REDACTED]!"),
     ],
 )
 def test_eof_punctuation_and_multiple(value: str, expected: str) -> None:

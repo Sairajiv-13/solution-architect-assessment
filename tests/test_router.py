@@ -79,6 +79,44 @@ async def test_primary_success_and_release_unused_backup_reservation(tmp_path: P
     assert rows(router.quota.path)[0][1] is not None
 
 
+async def test_router_admits_using_configured_token_counter(tmp_path: Path) -> None:
+    router, _ = setup(tmp_path, limit=12)
+    router.count_input = lambda _: 2
+    result = await router.complete("tenant", Generation(prompt="long prompt", max_tokens=4))
+    assert result["model"] == "primary"
+    assert rows(router.quota.path)[0][0] == 3
+
+
+async def test_first_safe_delta_arrives_while_provider_is_still_open(tmp_path: Path) -> None:
+    release = asyncio.Event()
+
+    class PausedProvider(FakeProvider):
+        @asynccontextmanager
+        async def stream(
+            self, model: str, payload: dict[str, Any]
+        ) -> AsyncIterator[AsyncIterator[Delta]]:
+            async def parts() -> AsyncIterator[Delta]:
+                yield Delta(delta="First safe text. ")
+                await release.wait()
+                yield Delta(delta="Last!")
+
+            yield parts()
+
+    router, _ = setup(tmp_path)
+    router.provider = PausedProvider()
+    request = Generation(prompt="hello")
+    stream = router.stream(await router.admit("tenant", request), request, "id")
+    try:
+        async with asyncio.timeout(2):
+            first = await anext(stream)
+        assert b"First safe text" in first and not release.is_set()
+        release.set()
+        assert b"Last!" in await anext(stream)
+        assert b"event: done" in await anext(stream)
+    finally:
+        await stream.aclose()
+
+
 @pytest.mark.parametrize("error", [ProviderFailure(429), httpx.ReadTimeout("secret timeout")])
 async def test_fallback_failure_charged_conservatively(tmp_path: Path, error: Exception) -> None:
     router, provider = setup(tmp_path)
