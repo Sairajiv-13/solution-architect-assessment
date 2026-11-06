@@ -46,7 +46,7 @@ Other local mock scenarios are `ok`, `primary_timeout`, `backup_failure`, and `b
 
 ## Clinical server integration
 
-Install the [clinical server](https://github.com/Sairajiv-13/clinical-trials-mcp-server) into its own Python environment. Set `CLINICAL_MCP_PYTHON` to that environment's Python executable and run `uv run python -m assessment.demo` from this repository.
+Install the [clinical server](https://github.com/Sairajiv-13/clinical-trials-mcp-server) into its own Python environment. Its dependency set differs from the gateway's pinned set, so the two are never installed together. Set `CLINICAL_MCP_PYTHON` to that environment's Python executable and run `uv run python -m assessment.demo` from this repository.
 
 The gateway still forwards JSON-RPC over HTTP. The downstream adapter opens an SDK stdio session to the clinical server. The demo lists its tools and calls `get_trial` through the authenticated gateway. The clinical process reads from a local synthetic registry fixture for this run.
 
